@@ -8,7 +8,7 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY non configurata su Vercel' })
+    res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on Vercel' })
     return
   }
 
@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     const { imageBase64, mediaType } = req.body
 
     if (!imageBase64) {
-      res.status(400).json({ error: 'Immagine mancante' })
+      res.status(400).json({ error: 'Missing file' })
       return
     }
 
@@ -35,6 +35,25 @@ Return ONLY a valid JSON object, no extra text, no backticks, with these fields:
   "note": "brief description: merchant/vendor name, max 60 characters"
 }`
 
+    const isPdf = (mediaType || '') === 'application/pdf'
+    const contentBlock = isPdf
+      ? {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: imageBase64
+          }
+        }
+      : {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mediaType || 'image/jpeg',
+            data: imageBase64
+          }
+        }
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -49,14 +68,7 @@ Return ONLY a valid JSON object, no extra text, no backticks, with these fields:
           {
             role: 'user',
             content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType || 'image/jpeg',
-                  data: imageBase64
-                }
-              },
+              contentBlock,
               { type: 'text', text: prompt }
             ]
           }
