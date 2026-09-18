@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CATEGORY_MAP, COMPANY, PREPARER } from '../constants.js'
 import { fetchEurRates, toEUR } from '../utils/fx.js'
+import { buildReportWithReceipts } from '../utils/exportPdf.js'
 
 function fmt(d) {
   if (!d) return ''
@@ -33,6 +34,7 @@ export default function ReportView({ mission, expenses }) {
   const [rates, setRates] = useState({ EUR: 1, USD: null, AED: null })
   const [rateSource, setRateSource] = useState('loading')
   const [fetchedAt, setFetchedAt] = useState(null)
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => { loadRates() }, [])
 
@@ -79,6 +81,27 @@ export default function ReportView({ mission, expenses }) {
 
   function printReport() {
     window.print()
+  }
+
+  async function downloadCombinedPdf() {
+    setExporting(true)
+    try {
+      const reportEl = document.getElementById('report-sheet')
+      const { blob, skipped } = await buildReportWithReceipts(reportEl, rows)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `are-expenses-${slug(mission.name)}-with-receipts.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+      if (skipped.length) {
+        alert('Report generated, but these receipts could not be embedded (unsupported format): ' + skipped.join(', '))
+      }
+    } catch (err) {
+      alert('Could not build the combined PDF: ' + err.message)
+    } finally {
+      setExporting(false)
+    }
   }
 
   const rateStatusLabel = {
@@ -130,6 +153,11 @@ export default function ReportView({ mission, expenses }) {
       <div className="report-actions">
         <button onClick={downloadCSV}>⬇ Export CSV</button>
         <button onClick={printReport}>🖨 Print / PDF</button>
+      </div>
+      <div className="report-actions">
+        <button onClick={downloadCombinedPdf} disabled={exporting}>
+          {exporting ? '⏳ Building PDF…' : '📎 Report + Receipts (PDF)'}
+        </button>
       </div>
 
       <div id="report-sheet">
