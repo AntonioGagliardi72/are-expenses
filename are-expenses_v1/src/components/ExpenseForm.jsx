@@ -10,7 +10,7 @@ const emptyForm = {
   amount: '',
   currency: 'AED',
   note: '',
-  receipt: null // { dataUrl, mediaType }
+  receipt: null // { dataUrl, mediaType, name }
 }
 
 function fileToBase64(file) {
@@ -36,7 +36,7 @@ export default function ExpenseForm({ missionId, onSaved }) {
     setScanError('')
 
     const dataUrl = await fileToBase64(file)
-    set('receipt', { dataUrl, mediaType: file.type })
+    set('receipt', { dataUrl, mediaType: file.type, name: file.name })
 
     // Auto-scan via AI
     setScanning(true)
@@ -91,7 +91,7 @@ export default function ExpenseForm({ missionId, onSaved }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,application/pdf"
         style={{ display: 'none' }}
         onChange={handleFile}
       />
@@ -101,10 +101,13 @@ export default function ExpenseForm({ missionId, onSaved }) {
         onClick={() => fileInputRef.current?.click()}
         disabled={scanning}
       >
-        {scanning ? 'Analyzing receipt…' : '📷 Take / upload receipt (AI auto-fill)'}
+        {scanning ? 'Analyzing receipt…' : '📷 Take / upload receipt or PDF (AI auto-fill)'}
       </button>
       {scanError && <p style={{ color: '#f87171', fontSize: 12 }}>{scanError}</p>}
-      {form.receipt && !scanning && (
+      {form.receipt && !scanning && form.receipt.mediaType === 'application/pdf' && (
+        <div className="pdf-badge">📄 {form.receipt.name}</div>
+      )}
+      {form.receipt && !scanning && form.receipt.mediaType !== 'application/pdf' && (
         <img
           src={form.receipt.dataUrl}
           alt="receipt"
