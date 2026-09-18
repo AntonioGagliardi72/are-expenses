@@ -1,34 +1,36 @@
 import { jsPDF } from 'jspdf'
-import html2canvas from 'html2canvas'
 import { PDFDocument } from 'pdf-lib'
+import { CATEGORY_MAP } from '../constants.js'
 
-// Renders a DOM element into one or more A4 PDF pages (image-based) and
-// returns the resulting PDF as an ArrayBuffer.
-async function renderElementToPdfBytes(element) {
-  const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff' })
-  const imgData = canvas.toDataURL('image/jpeg', 0.92)
+const MARGIN = 15
+const PAGE_W = 210
+const PAGE_H = 297
+const CONTENT_W = PAGE_W - MARGIN * 2
+const BOTTOM_LIMIT = PAGE_H - MARGIN - 14
 
-  const pdf = new jsPDF('p', 'mm', 'a4')
-  const pageWidth = pdf.internal.pageSize.getWidth()
-  const pageHeight = pdf.internal.pageSize.getHeight()
+const COLS = [
+  { key: 'date', label: 'Date', width: 26, align: 'left' },
+  { key: 'category', label: 'Category', width: 48, align: 'left' },
+  { key: 'amount', label: 'Amount', width: 32, align: 'right' },
+  { key: 'currency', label: 'Ccy', width: 20, align: 'left' },
+  { key: 'eur', label: 'Amount (EUR)', width: 34, align: 'right' }
+]
 
-  const imgWidth = pageWidth
-  const imgHeight = (canvas.height * imgWidth) / canvas.width
+function colX(index) {
+  let x = MARGIN
+  for (let i = 0; i < index; i++) x += COLS[i].width
+  return x
+}
 
-  let heightLeft = imgHeight
-  let position = 0
-
-  pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight)
-  heightLeft -= pageHeight
-
-  while (heightLeft > 0) {
-    position = heightLeft - imgHeight
-    pdf.addPage()
-    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight)
-    heightLeft -= pageHeight
-  }
-
-  return pdf.output('arraybuffer')
+async function loadLogoDataUrl() {
+  const res = await fetch('/logo.png')
+  const blob = await res.blob()
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
 }
 
 function base64ToBytes(dataUrl) {
@@ -39,13 +41,136 @@ function base64ToBytes(dataUrl) {
   return bytes
 }
 
-// Builds one merged PDF: the rendered report pages, followed by one page per
-// image receipt (fitted to the page) and the original pages of any PDF receipts.
-// `rows` is the list of expenses currently shown in the report.
-export async function buildReportWithReceipts(reportElement, rows) {
-  const reportBytes = await renderElementToPdfBytes(reportElement)
-  const merged = await PDFDocument.load(reportBytes)
+function drawTableHeaderRow(pdf, y) {
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(9)
+  pdf.setTextColor(90)
+  COLS.forEach((c, i) => {
+    const x = c.align === 'right' ? colX(i) + c.width - 1 : colX(i)
+    pdf.text(c.label.toUpperCase(), x, y, { align: c.align === 'right' ? 'right' : 'left' })
+  })
+  pdf.setDrawColor(200)
+  pdf.setLineWidth(0.3)
+  pdf.line(MARGIN, y + 2, PAGE_W - MARGIN, y + 2)
+  pdf.setTextColor(30)
+  return y + 8
+}
 
+// Builds one A4 PDF: a natively-drawn (vector, paginated) expense report,
+// followed by one page per receipt (images fitted to A4, PDF receipts appended
+// as their original pages). Returns { blob, skipped } where `skipped` lists
+// any receipts that couldn't be embedded.
+export async function buildReportWithReceipts({ mission, rows, rates, company, preparer, totalEUR, fmtDate }) {
+  const pdf = new jsPDF('p', 'mm', 'a4')
+  let y = MARGIN
+
+  try {
+    const logoDataUrl = await loadLogoDataUrl()
+    pdf.addImage(logoDataUrl, 'PNG', MARGIN, y, 16, 16)
+  } catch {
+    // Logo is optional — continue without it if it can't be loaded
+  }
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(13)
+  pdf.setTextColor(20)
+  pdf.text(company.name, MARGIN + 20, y + 5)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8)
+  pdf.setTextColor(90)
+  const addressLines = pdf.splitTextToSize(company.address, CONTENT_W - 20)
+  pdf.text(addressLines, MARGIN + 20, y + 10)
+  pdf.text(
+    `License No. ${company.licenseNo} \u00b7 Manager: ${company.manager}`,
+    MARGIN + 20,
+    y + 10 + addressLines.length * 3.6
+  )
+
+  y += 22
+  pdf.setDrawColor(20)
+  pdf.setLineWidth(0.6)
+  pdf.line(MARGIN, y, PAGE_W - MARGIN, y)
+  y += 8
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(13)
+  pdf.setTextColor(20)
+  pdf.text(`Expense Report - ${mission.name}`, MARGIN, y)
+  y += 6
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  pdf.setTextColor(70)
+  pdf.text(`Mission dates: ${fmtDate(mission.startDate)} - ${fmtDate(mission.endDate)}`, MARGIN, y)
+  y += 5
+  pdf.text(`Prepared by: ${preparer.name} (${preparer.email})`, MARGIN, y)
+  y += 5
+  pdf.text(
+    `Rates applied: 1 EUR = ${rates.USD ?? '-'} USD  \u00b7  1 EUR = ${rates.AED ?? '-'} AED`,
+    MARGIN,
+    y
+  )
+  y += 8
+
+  y = drawTableHeaderRow(pdf, y)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  const rowHeight = 7
+
+  if (rows.length === 0) {
+    pdf.setTextColor(120)
+    pdf.text('No expenses for this mission.', MARGIN, y)
+    y += rowHeight
+  }
+
+  for (const r of rows) {
+    if (y > BOTTOM_LIMIT) {
+      pdf.addPage()
+      y = MARGIN
+      y = drawTableHeaderRow(pdf, y)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+    }
+    pdf.setTextColor(30)
+    pdf.text(fmtDate(r.date), colX(0), y)
+    pdf.text(CATEGORY_MAP[r.category] || r.category, colX(1), y)
+    pdf.text(r.amount.toFixed(2), colX(2) + COLS[2].width - 1, y, { align: 'right' })
+    pdf.text(r.currency, colX(3), y)
+    pdf.text(r.eur != null ? r.eur.toFixed(2) : '\u2014', colX(4) + COLS[4].width - 1, y, { align: 'right' })
+    y += rowHeight
+  }
+
+  if (y > BOTTOM_LIMIT - 12) {
+    pdf.addPage()
+    y = MARGIN
+  }
+  y += 2
+  pdf.setDrawColor(20)
+  pdf.setLineWidth(0.5)
+  pdf.line(MARGIN, y - 4, PAGE_W - MARGIN, y - 4)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(10)
+  pdf.setTextColor(20)
+  pdf.text('TOTAL (EUR)', colX(1), y)
+  pdf.text(totalEUR.toFixed(2), colX(4) + COLS[4].width - 1, y, { align: 'right' })
+  y += 10
+
+  pdf.setFont('helvetica', 'italic')
+  pdf.setFontSize(7.5)
+  pdf.setTextColor(130)
+  const footerText = `${company.name} \u00b7 Report auto-generated by ARE Expenses for internal expense reimbursement purposes. All amounts converted to EUR at the exchange rates stated above.`
+  const footerLines = pdf.splitTextToSize(footerText, CONTENT_W)
+  if (y + footerLines.length * 3.5 > PAGE_H - MARGIN) {
+    pdf.addPage()
+    y = MARGIN
+  }
+  pdf.text(footerLines, MARGIN, y)
+
+  // --- Attach receipts ---
+  const reportBytes = pdf.output('arraybuffer')
+  const merged = await PDFDocument.load(reportBytes)
   const skipped = []
 
   for (const r of rows) {
@@ -62,15 +187,11 @@ export async function buildReportWithReceipts(reportElement, rows) {
         const bytes = base64ToBytes(dataUrl)
         let image
         try {
-          image = mediaType === 'image/png'
-            ? await merged.embedPng(bytes)
-            : await merged.embedJpg(bytes)
+          image = mediaType === 'image/png' ? await merged.embedPng(bytes) : await merged.embedJpg(bytes)
         } catch {
-          // Fallback for formats pdf-lib can't embed directly (e.g. some HEIC edge cases)
           image = await merged.embedJpg(bytes)
         }
-
-        const page = merged.addPage()
+        const page = merged.addPage([595.28, 841.89]) // A4 in points
         const { width: pw, height: ph } = page.getSize()
         const margin = 30
         const scale = Math.min((pw - margin * 2) / image.width, (ph - margin * 2) / image.height)
@@ -78,7 +199,7 @@ export async function buildReportWithReceipts(reportElement, rows) {
         const h = image.height * scale
         page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h })
       }
-    } catch (err) {
+    } catch {
       skipped.push(name || r.note || r.date)
     }
   }
