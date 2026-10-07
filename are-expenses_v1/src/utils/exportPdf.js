@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument } from '@cantoo/pdf-lib'
 import { CATEGORY_MAP } from '../constants.js'
 
 const MARGIN = 15
@@ -180,7 +180,7 @@ export async function buildReportWithReceipts({ mission, rows, rates, company, p
     try {
       if (mediaType === 'application/pdf') {
         const bytes = base64ToBytes(dataUrl)
-        const srcDoc = await PDFDocument.load(bytes)
+        const srcDoc = await PDFDocument.load(bytes, { password: '' })
         const copiedPages = await merged.copyPages(srcDoc, srcDoc.getPageIndices())
         copiedPages.forEach(p => merged.addPage(p))
       } else {
@@ -199,8 +199,8 @@ export async function buildReportWithReceipts({ mission, rows, rates, company, p
         const h = image.height * scale
         page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h })
       }
-    } catch {
-      skipped.push(name || r.note || r.date)
+    } catch (err) {
+      skipped.push(`${name || r.note || r.date} [${err?.message || 'unknown error'}]`)
     }
   }
 
