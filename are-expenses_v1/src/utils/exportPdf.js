@@ -8,6 +8,11 @@ const PAGE_H = 297
 const CONTENT_W = PAGE_W - MARGIN * 2
 const BOTTOM_LIMIT = PAGE_H - MARGIN - 14
 
+// Receipt photos are shrunk before being embedded: A4 at this size is still
+// perfectly readable on screen and in print, but the file is far smaller.
+const MAX_IMAGE_SIDE = 1600 // pixels, longest side
+const JPEG_QUALITY = 0.72
+
 const COLS = [
   { key: 'date', label: 'Date', width: 26, align: 'left' },
   { key: 'category', label: 'Category', width: 48, align: 'left' },
@@ -41,6 +46,36 @@ function base64ToBytes(dataUrl) {
   return bytes
 }
 
+// Returns smaller JPEG bytes for a receipt photo, or null if it can't (or
+// shouldn't) be shrunk, in which case the caller embeds the original untouched.
+async function shrinkImage(bytes, mediaType) {
+  try {
+    const blob = new Blob([bytes], { type: mediaType || 'image/jpeg' })
+    // 'from-image' applies the photo's rotation so it is drawn the right way up
+    const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff' // JPEG has no transparency: avoid black backgrounds
+    ctx.fillRect(0, 0, w, h)
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+
+    const out = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY))
+    canvas.width = canvas.height = 0 // release memory (matters on iPhone)
+    if (!out) return null
+    const smaller = new Uint8Array(await out.arrayBuffer())
+    return smaller.length < bytes.length ? smaller : null
+  } catch {
+    return null
+  }
+}
+
 function drawTableHeaderRow(pdf, y) {
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(9)
@@ -61,7 +96,7 @@ function drawTableHeaderRow(pdf, y) {
 // as their original pages). Returns { blob, skipped } where `skipped` lists
 // any receipts that couldn't be embedded.
 export async function buildReportWithReceipts({ mission, rows, rates, company, preparer, totalEUR, fmtDate }) {
-  const pdf = new jsPDF('p', 'mm', 'a4')
+  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true })
   let y = MARGIN
 
   try {
@@ -180,16 +215,24 @@ export async function buildReportWithReceipts({ mission, rows, rates, company, p
     try {
       if (mediaType === 'application/pdf') {
         const bytes = base64ToBytes(dataUrl)
+        // Many tickets/invoices are protected with an owner password only; an empty
+        // password decrypts them (and plain PDFs load normally with it too).
         const srcDoc = await PDFDocument.load(bytes, { password: '' })
         const copiedPages = await merged.copyPages(srcDoc, srcDoc.getPageIndices())
         copiedPages.forEach(p => merged.addPage(p))
       } else {
-        const bytes = base64ToBytes(dataUrl)
+        const original = base64ToBytes(dataUrl)
+        const shrunk = await shrinkImage(original, mediaType)
         let image
-        try {
-          image = mediaType === 'image/png' ? await merged.embedPng(bytes) : await merged.embedJpg(bytes)
-        } catch {
-          image = await merged.embedJpg(bytes)
+        if (shrunk) {
+          image = await merged.embedJpg(shrunk)
+        } else {
+          // Could not shrink (or no gain): embed the photo exactly as saved
+          try {
+            image = mediaType === 'image/png' ? await merged.embedPng(original) : await merged.embedJpg(original)
+          } catch {
+            image = await merged.embedJpg(original)
+          }
         }
         const page = merged.addPage([595.28, 841.89]) // A4 in points
         const { width: pw, height: ph } = page.getSize()
