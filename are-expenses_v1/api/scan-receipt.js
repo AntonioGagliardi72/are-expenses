@@ -25,12 +25,17 @@ export default async function handler(req, res) {
       'fuel', 'train', 'meals', 'hotel', 'other'
     ]
 
+    const currencies = [
+      'EUR', 'USD', 'AED', 'GBP', 'CHF', 'SAR', 'QAR',
+      'KWD', 'OMR', 'BHD', 'KZT', 'TRY', 'EGP', 'INR'
+    ]
+
     const prompt = `Analyze this receipt for a business travel expense.
 Return ONLY a valid JSON object, no extra text, no backticks, with these fields:
 {
   "date": "YYYY-MM-DD (receipt date; use today's date if unreadable)",
   "amount": decimal number (only the final total paid, no currency symbols),
-  "currency": "one of AED, USD, EUR (inferred from symbol/context, default AED)",
+  "currency": "3-letter ISO 4217 code of the currency actually charged on the receipt. Prefer one of: ${currencies.join(', ')}. If the receipt is in any other currency, return its real ISO code (never force it into the list). Use the country, city and merchant to resolve ambiguous symbols such as $ or £. Default AED only if there is no indication at all.",
   "category": "one of: ${categories.join(', ')} (inferred from the type of merchant/receipt)",
   "note": "brief description: merchant/vendor name, max 60 characters"
 }`
