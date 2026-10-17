@@ -31,7 +31,7 @@ function toCSV(rows, rates) {
 }
 
 export default function ReportView({ mission, expenses }) {
-  const [rates, setRates] = useState({ EUR: 1, USD: null, AED: null })
+  const [rates, setRates] = useState({ EUR: 1 })
   const [rateSource, setRateSource] = useState('loading')
   const [fetchedAt, setFetchedAt] = useState(null)
   const [exporting, setExporting] = useState(false)
@@ -65,6 +65,13 @@ export default function ReportView({ mission, expenses }) {
     () => rowsWithEur.reduce((sum, r) => sum + (r.eur || 0), 0),
     [rowsWithEur]
   )
+
+  // Currencies actually used in this mission (other than EUR) need a rate
+  const usedCurrencies = useMemo(
+    () => [...new Set(rows.map(r => r.currency))].filter(c => c !== 'EUR').sort(),
+    [rows]
+  )
+  const ratesLine = usedCurrencies.map(c => `1 EUR = ${rates[c] ?? '—'} ${c}`).join(' · ')
 
   const missingRate = rowsWithEur.some(r => r.eur == null)
 
@@ -128,23 +135,20 @@ export default function ReportView({ mission, expenses }) {
 
       <div className="card" style={{ marginBottom: 14 }}>
         <label style={{ marginTop: 0 }}>Exchange rates to EUR</label>
-        <div className="row">
-          <div>
-            <label>1 EUR = ? USD</label>
-            <input
-              type="number" step="0.0001" min="0"
-              value={rates.USD ?? ''}
-              onChange={e => handleRateChange('USD', e.target.value)}
-            />
-          </div>
-          <div>
-            <label>1 EUR = ? AED</label>
-            <input
-              type="number" step="0.0001" min="0"
-              value={rates.AED ?? ''}
-              onChange={e => handleRateChange('AED', e.target.value)}
-            />
-          </div>
+        {usedCurrencies.length === 0 && (
+          <p style={{ fontSize: 12, color: 'var(--text-dim)' }}>All expenses are in EUR: no conversion needed.</p>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {usedCurrencies.map(c => (
+            <div key={c}>
+              <label>1 EUR = ? {c}</label>
+              <input
+                type="number" step="0.0001" min="0"
+                value={rates[c] ?? ''}
+                onChange={e => handleRateChange(c, e.target.value)}
+              />
+            </div>
+          ))}
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 8 }}>{rateStatusLabel}</p>
         <button type="button" className="btn-secondary" style={{ marginTop: 0 }} onClick={loadRates}>
@@ -185,7 +189,7 @@ export default function ReportView({ mission, expenses }) {
           <br />
           Prepared by: {PREPARER.name} ({PREPARER.email})
           <br />
-          Rates applied: 1 EUR = {rates.USD ?? '—'} USD &middot; 1 EUR = {rates.AED ?? '—'} AED
+          Rates applied: {ratesLine || 'all amounts in EUR'}
         </p>
 
         <table>
