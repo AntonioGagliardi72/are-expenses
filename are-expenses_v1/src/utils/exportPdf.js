@@ -141,12 +141,13 @@ export async function buildReportWithReceipts({ mission, rows, rates, company, p
   y += 5
   pdf.text(`Prepared by: ${preparer.name} (${preparer.email})`, MARGIN, y)
   y += 5
-  pdf.text(
-    `Rates applied: 1 EUR = ${rates.USD ?? '-'} USD  \u00b7  1 EUR = ${rates.AED ?? '-'} AED`,
-    MARGIN,
-    y
-  )
-  y += 8
+  const used = [...new Set(rows.map(r => r.currency))].filter(c => c !== 'EUR').sort()
+  const ratesText = used.length
+    ? 'Rates applied: ' + used.map(c => `1 EUR = ${rates[c] ?? '-'} ${c}`).join('  \u00b7  ')
+    : 'Rates applied: all amounts in EUR'
+  const rateLines = pdf.splitTextToSize(ratesText, PAGE_W - 2 * MARGIN)
+  pdf.text(rateLines, MARGIN, y)
+  y += 4 + rateLines.length * 4.2
 
   y = drawTableHeaderRow(pdf, y)
 
