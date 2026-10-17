@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CATEGORY_MAP, CURRENCIES } from '../constants.js'
+import { CATEGORY_MAP } from '../constants.js'
 import { deleteExpense } from '../db.js'
 import { fetchEurRates, toEUR } from '../utils/fx.js'
 
@@ -8,8 +8,8 @@ function fmt(d) {
   return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-export default function ExpenseList({ mission, expenses, onChanged }) {
-  const [rates, setRates] = useState({ EUR: 1, USD: null, AED: null })
+export default function ExpenseList({ mission, expenses, onChanged, onEdit }) {
+  const [rates, setRates] = useState({ EUR: 1 })
 
   useEffect(() => {
     fetchEurRates().then(r => setRates(r.rates))
@@ -22,7 +22,6 @@ export default function ExpenseList({ mission, expenses, onChanged }) {
 
   const totals = useMemo(() => {
     const t = {}
-    for (const c of CURRENCIES) t[c] = 0
     for (const e of missionExpenses) t[e.currency] = (t[e.currency] || 0) + e.amount
     return t
   }, [missionExpenses])
@@ -46,7 +45,7 @@ export default function ExpenseList({ mission, expenses, onChanged }) {
       </div>
 
       <div className="totals-grid">
-        {CURRENCIES.map(c => (
+        {Object.keys(totals).map(c => (
           <div className="total-chip" key={c}>
             <div className="v">{totals[c].toFixed(2)}</div>
             <div className="l">{c}</div>
@@ -73,6 +72,7 @@ export default function ExpenseList({ mission, expenses, onChanged }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <span className="expense-amount">{e.amount.toFixed(2)} {e.currency}</span>
+              <button className="expense-del" style={{ color: 'var(--are-green)' }} onClick={() => onEdit?.(e)}>Edit</button>
               <button className="expense-del" onClick={() => handleDelete(e.id)}>Delete</button>
             </div>
           </div>
