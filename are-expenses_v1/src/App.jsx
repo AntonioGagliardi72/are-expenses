@@ -12,6 +12,7 @@ export default function App() {
   const [tab, setTab] = useState('missions')
   const [expenses, setExpenses] = useState([])
   const [missions, setMissions] = useState([])
+  const [editingExpense, setEditingExpense] = useState(null)
   const [currentMissionId, setCurrentMissionId] = useState(
     () => localStorage.getItem(LAST_MISSION_KEY) || null
   )
@@ -46,7 +47,13 @@ export default function App() {
       setTab('missions')
       return
     }
+    if (t === 'new') setEditingExpense(null)
     setTab(t)
+  }
+
+  function startEdit(expense) {
+    setEditingExpense(expense)
+    setTab('new')
   }
 
   return (
@@ -78,12 +85,15 @@ export default function App() {
         )}
         {tab === 'new' && currentMission && (
           <ExpenseForm
+            key={editingExpense ? editingExpense.id : 'new'}
             missionId={currentMission.id}
-            onSaved={() => { reloadExpenses(); setTab('list') }}
+            expense={editingExpense}
+            onCancel={() => { setEditingExpense(null); setTab('list') }}
+            onSaved={() => { setEditingExpense(null); reloadExpenses(); setTab('list') }}
           />
         )}
         {tab === 'list' && currentMission && (
-          <ExpenseList mission={currentMission} expenses={expenses} onChanged={reloadExpenses} />
+          <ExpenseList mission={currentMission} expenses={expenses} onChanged={reloadExpenses} onEdit={startEdit} />
         )}
         {tab === 'report' && currentMission && (
           <ReportView mission={currentMission} expenses={expenses} />
