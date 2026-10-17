@@ -1,34 +1,253 @@
-export const CATEGORIES = [
-  { id: 'flight', label: 'Air travel' },
-  { id: 'taxi', label: 'Taxi' },
-  { id: 'car_rental', label: 'Car rental' },
-  { id: 'toll', label: 'Toll fee (car rental)' },
-  { id: 'parking', label: 'Parking' },
-  { id: 'fuel', label: 'Fuel' },
-  { id: 'train', label: 'Train' },
-  { id: 'meals', label: 'Meals' },
-  { id: 'hotel', label: 'Hotel' },
-  { id: 'other', label: 'Other' }
+import { jsPDF } from 'jspdf'
+import { PDFDocument } from '@cantoo/pdf-lib'
+import { CATEGORY_MAP } from '../constants.js'
+
+const MARGIN = 15
+const PAGE_W = 210
+const PAGE_H = 297
+const CONTENT_W = PAGE_W - MARGIN * 2
+const BOTTOM_LIMIT = PAGE_H - MARGIN - 14
+
+// Receipt photos are shrunk before being embedded: A4 at this size is still
+// perfectly readable on screen and in print, but the file is far smaller.
+const MAX_IMAGE_SIDE = 1600 // pixels, longest side
+const JPEG_QUALITY = 0.72
+
+const COLS = [
+  { key: 'date', label: 'Date', width: 26, align: 'left' },
+  { key: 'category', label: 'Category', width: 48, align: 'left' },
+  { key: 'amount', label: 'Amount', width: 32, align: 'right' },
+  { key: 'currency', label: 'Ccy', width: 20, align: 'left' },
+  { key: 'eur', label: 'Amount (EUR)', width: 34, align: 'right' }
 ]
 
-export const CATEGORY_MAP = Object.fromEntries(CATEGORIES.map(c => [c.id, c.label]))
-
-export const CURRENCIES = ['AED', 'USD', 'EUR']
-
-// The final report/reimbursement currency for foreign companies
-export const REPORT_CURRENCY = 'EUR'
-
-// Extracted from the Business License - Sharjah Publishing City Free Zone
-export const COMPANY = {
-  name: 'ARE FZE',
-  fullName: 'ARE FZE (Advanced Rotating Equipment)',
-  licenseNo: '4308540.01',
-  formationNumber: '4308540',
-  address: 'Business Centre, Sharjah Publishing City Free Zone, Sharjah, United Arab Emirates',
-  manager: 'Antonio Gagliardi'
+function colX(index) {
+  let x = MARGIN
+  for (let i = 0; i < index; i++) x += COLS[i].width
+  return x
 }
 
-export const PREPARER = {
-  name: 'Antonio Gagliardi',
-  email: 'antonio.gagliardi@are-consulting.com'
+async function loadLogoDataUrl() {
+  const res = await fetch('/logo.png')
+  const blob = await res.blob()
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+function base64ToBytes(dataUrl) {
+  const base64 = dataUrl.split(',')[1]
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+// Returns smaller JPEG bytes for a receipt photo, or null if it can't (or
+// shouldn't) be shrunk, in which case the caller embeds the original untouched.
+async function shrinkImage(bytes, mediaType) {
+  try {
+    const blob = new Blob([bytes], { type: mediaType || 'image/jpeg' })
+    // 'from-image' applies the photo's rotation so it is drawn the right way up
+    const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff' // JPEG has no transparency: avoid black backgrounds
+    ctx.fillRect(0, 0, w, h)
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+
+    const out = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY))
+    canvas.width = canvas.height = 0 // release memory (matters on iPhone)
+    if (!out) return null
+    const smaller = new Uint8Array(await out.arrayBuffer())
+    return smaller.length < bytes.length ? smaller : null
+  } catch {
+    return null
+  }
+}
+
+function drawTableHeaderRow(pdf, y) {
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(9)
+  pdf.setTextColor(90)
+  COLS.forEach((c, i) => {
+    const x = c.align === 'right' ? colX(i) + c.width - 1 : colX(i)
+    pdf.text(c.label.toUpperCase(), x, y, { align: c.align === 'right' ? 'right' : 'left' })
+  })
+  pdf.setDrawColor(200)
+  pdf.setLineWidth(0.3)
+  pdf.line(MARGIN, y + 2, PAGE_W - MARGIN, y + 2)
+  pdf.setTextColor(30)
+  return y + 8
+}
+
+// Builds one A4 PDF: a natively-drawn (vector, paginated) expense report,
+// followed by one page per receipt (images fitted to A4, PDF receipts appended
+// as their original pages). Returns { blob, skipped } where `skipped` lists
+// any receipts that couldn't be embedded.
+export async function buildReportWithReceipts({ mission, rows, rates, company, preparer, totalEUR, fmtDate }) {
+  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true })
+  let y = MARGIN
+
+  try {
+    const logoDataUrl = await loadLogoDataUrl()
+    pdf.addImage(logoDataUrl, 'PNG', MARGIN, y, 16, 16)
+  } catch {
+    // Logo is optional — continue without it if it can't be loaded
+  }
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(13)
+  pdf.setTextColor(20)
+  pdf.text(company.name, MARGIN + 20, y + 5)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8)
+  pdf.setTextColor(90)
+  const addressLines = pdf.splitTextToSize(company.address, CONTENT_W - 20)
+  pdf.text(addressLines, MARGIN + 20, y + 10)
+  pdf.text(
+    `License No. ${company.licenseNo} \u00b7 Manager: ${company.manager}`,
+    MARGIN + 20,
+    y + 10 + addressLines.length * 3.6
+  )
+
+  y += 22
+  pdf.setDrawColor(20)
+  pdf.setLineWidth(0.6)
+  pdf.line(MARGIN, y, PAGE_W - MARGIN, y)
+  y += 8
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(13)
+  pdf.setTextColor(20)
+  pdf.text(`Expense Report - ${mission.name}`, MARGIN, y)
+  y += 6
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  pdf.setTextColor(70)
+  pdf.text(`Mission dates: ${fmtDate(mission.startDate)} - ${fmtDate(mission.endDate)}`, MARGIN, y)
+  y += 5
+  pdf.text(`Prepared by: ${preparer.name} (${preparer.email})`, MARGIN, y)
+  y += 5
+  const used = [...new Set(rows.map(r => r.currency))].filter(c => c !== 'EUR').sort()
+  const ratesText = used.length
+    ? 'Rates applied: ' + used.map(c => `1 EUR = ${rates[c] ?? '-'} ${c}`).join('  \u00b7  ')
+    : 'Rates applied: all amounts in EUR'
+  const rateLines = pdf.splitTextToSize(ratesText, PAGE_W - 2 * MARGIN)
+  pdf.text(rateLines, MARGIN, y)
+  y += 4 + rateLines.length * 4.2
+
+  y = drawTableHeaderRow(pdf, y)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  const rowHeight = 7
+
+  if (rows.length === 0) {
+    pdf.setTextColor(120)
+    pdf.text('No expenses for this mission.', MARGIN, y)
+    y += rowHeight
+  }
+
+  for (const r of rows) {
+    if (y > BOTTOM_LIMIT) {
+      pdf.addPage()
+      y = MARGIN
+      y = drawTableHeaderRow(pdf, y)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+    }
+    pdf.setTextColor(30)
+    pdf.text(fmtDate(r.date), colX(0), y)
+    pdf.text(CATEGORY_MAP[r.category] || r.category, colX(1), y)
+    pdf.text(r.amount.toFixed(2), colX(2) + COLS[2].width - 1, y, { align: 'right' })
+    pdf.text(r.currency, colX(3), y)
+    pdf.text(r.eur != null ? r.eur.toFixed(2) : '\u2014', colX(4) + COLS[4].width - 1, y, { align: 'right' })
+    y += rowHeight
+  }
+
+  if (y > BOTTOM_LIMIT - 12) {
+    pdf.addPage()
+    y = MARGIN
+  }
+  y += 2
+  pdf.setDrawColor(20)
+  pdf.setLineWidth(0.5)
+  pdf.line(MARGIN, y - 4, PAGE_W - MARGIN, y - 4)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(10)
+  pdf.setTextColor(20)
+  pdf.text('TOTAL (EUR)', colX(1), y)
+  pdf.text(totalEUR.toFixed(2), colX(4) + COLS[4].width - 1, y, { align: 'right' })
+  y += 10
+
+  pdf.setFont('helvetica', 'italic')
+  pdf.setFontSize(7.5)
+  pdf.setTextColor(130)
+  const footerText = `${company.name} \u00b7 Report auto-generated by ARE Expenses for internal expense reimbursement purposes. All amounts converted to EUR at the exchange rates stated above.`
+  const footerLines = pdf.splitTextToSize(footerText, CONTENT_W)
+  if (y + footerLines.length * 3.5 > PAGE_H - MARGIN) {
+    pdf.addPage()
+    y = MARGIN
+  }
+  pdf.text(footerLines, MARGIN, y)
+
+  // --- Attach receipts ---
+  const reportBytes = pdf.output('arraybuffer')
+  const merged = await PDFDocument.load(reportBytes)
+  const skipped = []
+
+  for (const r of rows) {
+    if (!r.receipt?.dataUrl) continue
+    const { dataUrl, mediaType, name } = r.receipt
+
+    try {
+      if (mediaType === 'application/pdf') {
+        const bytes = base64ToBytes(dataUrl)
+        // Many tickets/invoices are protected with an owner password only; an empty
+        // password decrypts them (and plain PDFs load normally with it too).
+        const srcDoc = await PDFDocument.load(bytes, { password: '' })
+        const copiedPages = await merged.copyPages(srcDoc, srcDoc.getPageIndices())
+        copiedPages.forEach(p => merged.addPage(p))
+      } else {
+        const original = base64ToBytes(dataUrl)
+        const shrunk = await shrinkImage(original, mediaType)
+        let image
+        if (shrunk) {
+          image = await merged.embedJpg(shrunk)
+        } else {
+          // Could not shrink (or no gain): embed the photo exactly as saved
+          try {
+            image = mediaType === 'image/png' ? await merged.embedPng(original) : await merged.embedJpg(original)
+          } catch {
+            image = await merged.embedJpg(original)
+          }
+        }
+        const page = merged.addPage([595.28, 841.89]) // A4 in points
+        const { width: pw, height: ph } = page.getSize()
+        const margin = 30
+        const scale = Math.min((pw - margin * 2) / image.width, (ph - margin * 2) / image.height)
+        const w = image.width * scale
+        const h = image.height * scale
+        page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h })
+      }
+    } catch (err) {
+      skipped.push(`${name || r.note || r.date} [${err?.message || 'unknown error'}]`)
+    }
+  }
+
+  const mergedBytes = await merged.save()
+  return { blob: new Blob([mergedBytes], { type: 'application/pdf' }), skipped }
 }
