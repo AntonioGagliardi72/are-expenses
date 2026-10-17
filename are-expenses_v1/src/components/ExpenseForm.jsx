@@ -4,13 +4,24 @@ import { saveExpense } from '../db.js'
 
 const todayStr = () => new Date().toISOString().slice(0, 10)
 
-const emptyForm = {
+const makeEmptyForm = () => ({
   category: '',
   date: todayStr(),
   amount: '',
   currency: 'AED',
   note: '',
   receipt: null // { dataUrl, mediaType, name }
+})
+
+function formFromExpense(e) {
+  return {
+    category: e.category,
+    date: e.date,
+    amount: String(e.amount),
+    currency: e.currency,
+    note: e.note || '',
+    receipt: e.receipt || null
+  }
 }
 
 function fileToBase64(file) {
@@ -22,8 +33,9 @@ function fileToBase64(file) {
   })
 }
 
-export default function ExpenseForm({ missionId, onSaved }) {
-  const [form, setForm] = useState(emptyForm)
+export default function ExpenseForm({ missionId, expense, onSaved, onCancel }) {
+  const isEdit = !!expense
+  const [form, setForm] = useState(() => (expense ? formFromExpense(expense) : makeEmptyForm()))
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const fileInputRef = useRef(null)
@@ -55,7 +67,9 @@ export default function ExpenseForm({ missionId, onSaved }) {
         category: CATEGORIES.some(c => c.id === data.category) ? data.category : f.category,
         date: data.date || f.date,
         amount: data.amount != null ? String(data.amount) : f.amount,
-        currency: CURRENCIES.includes(data.currency) ? data.currency : f.currency,
+        currency: /^[A-Z]{3}$/.test(String(data.currency || '').toUpperCase())
+          ? String(data.currency).toUpperCase()
+          : f.currency,
         note: data.note || f.note
       }))
     } catch (err) {
@@ -69,25 +83,26 @@ export default function ExpenseForm({ missionId, onSaved }) {
     e.preventDefault()
     if (!form.category || !form.amount || !form.date) return
 
-    const expense = {
-      id: crypto.randomUUID(),
-      missionId,
+    const saved = {
+      id: isEdit ? expense.id : crypto.randomUUID(),
+      missionId: isEdit ? expense.missionId : missionId,
       category: form.category,
       date: form.date,
       amount: parseFloat(form.amount),
       currency: form.currency,
       note: form.note.trim(),
       receipt: form.receipt,
-      createdAt: new Date().toISOString()
+      createdAt: isEdit ? expense.createdAt : new Date().toISOString()
     }
-    await saveExpense(expense)
-    setForm(emptyForm)
+    await saveExpense(saved)
+    setForm(makeEmptyForm())
     if (fileInputRef.current) fileInputRef.current.value = ''
     onSaved?.()
   }
 
   return (
     <form className="card" onSubmit={handleSubmit}>
+      {isEdit && <div style={{ fontWeight: 700, marginBottom: 10 }}>Edit expense</div>}
       <input
         ref={fileInputRef}
         type="file"
@@ -152,7 +167,9 @@ export default function ExpenseForm({ missionId, onSaved }) {
         <div>
           <label>Currency</label>
           <select value={form.currency} onChange={e => set('currency', e.target.value)}>
-            {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+            {(CURRENCIES.includes(form.currency) ? CURRENCIES : [...CURRENCIES, form.currency]).map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
           </select>
         </div>
       </div>
@@ -166,7 +183,10 @@ export default function ExpenseForm({ missionId, onSaved }) {
         required={form.category === 'other'}
       />
 
-      <button type="submit" className="btn-primary">Save expense</button>
+      <button type="submit" className="btn-primary">{isEdit ? 'Save changes' : 'Save expense'}</button>
+      {isEdit && (
+        <button type="button" className="btn-secondary" onClick={onCancel}>Cancel</button>
+      )}
     </form>
   )
 }
